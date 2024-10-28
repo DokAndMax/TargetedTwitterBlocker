@@ -129,7 +129,7 @@
 		return data?.data?.user?.result?.timeline?.timeline?.instructions
 			.flatMap(instr => instr.entries || [])
 			.filter(entry => entry.content.entryType === "TimelineTimelineItem"
-							&& entry.content.itemContent.user_results.resul
+							&& entry.content.itemContent.user_results.result
 							&& entry.content.itemContent.user_results.result.__typename === "UserUnavailable")
 			.map(entry => ({
 				screenName: entry.content.itemContent.user_results.result.legacy?.screen_name,
