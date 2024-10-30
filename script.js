@@ -197,7 +197,9 @@
 	}
 
 	function isTweetEntry(itemContent) {
-		return itemContent.itemType === "TimelineTweet" && itemContent.tweet_results.result.__typename !== "TweetWithVisibilityResults";
+		return itemContent.itemType === "TimelineTweet"
+			&& itemContent.tweet_results.result.__typename !== "TweetWithVisibilityResults"
+			&& itemContent.tweet_results.result.__typename !== "TweetTombstone";
 	}
 
 	function isCursorEntry(itemContent) {
