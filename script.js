@@ -140,7 +140,6 @@
 	// Blocks a user with the given user ID
 	async function blockUser(userId) {
 		await apiRequest(config.apiEndpoints.blockUser, 'POST', `user_id=${userId}`);
-		console.log(`Blocked user with ID: ${userId}`);
 	}
 
 	// Processes tweet responses, extracting user IDs and blocking users based on conditions
@@ -207,10 +206,11 @@
 	}
 	
 	function logBlockedUser(profile, tweet) {
-		console.log(`Blocked user ${profile.screen_name}`);
-		console.log(`Profile: ${profile.name} (@${profile.screen_name})`);
-		console.log(`Tweet: ${tweet.full_text}`);
-		console.log(`Link: https://x.com/${profile.screen_name}/status/${tweet.id_str}`);
+		console.log([
+			`Blocked user ${profile.name} (@${profile.screen_name})`,
+			`Link: https://x.com/${profile.screen_name}/status/${tweet.id_str}`,
+			`Tweet: ${tweet.full_text}`
+		].join('\n'));
 	}
 
 	// Predicate function to check if a user should be blocked based on conditions
