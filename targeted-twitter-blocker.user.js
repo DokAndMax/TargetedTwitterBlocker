@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Targeted Twitter Blocker
 // @namespace    https://github.com/DokAndMax/TargetedTwitterBlocker
-// @version      1.1
+// @version      1.2
 // @description  Block users based on custom conditions with validation
 // @author       DokAndMax
 // @match        https://twitter.com/*
@@ -165,6 +165,7 @@
     let btn = null;
     let urlCheckInterval = null;
     let isProcessing = false;
+    let isCancelling = false;
     let abortController = null;
     let isCompleted = false;
 
@@ -190,41 +191,30 @@
         const isTweet = isTweetPage();
         btn.disabled = !isTweet && !isProcessing;
 
-        // Reset completion state if not on tweet page
+        let stateKey;
+
         if (!isTweet) {
             isCompleted = false;
-            if (isProcessing) {
-                cancelProcessing();
-            }
-            btn.textContent = buttonStyles.mainButton.states.disabled.text;
-            btn.style.backgroundColor = buttonStyles.mainButton.states.disabled.background;
-            btn.style.color = buttonStyles.mainButton.states.disabled.color;
-            return;
-        }
-
-        // If completed, show success message
-        if (isCompleted) {
-            btn.textContent = `${buttonStyles.mainButton.states.success.text} ${totalBlocked} users`;
-            btn.style.backgroundColor = buttonStyles.mainButton.states.success.background;
-            btn.style.color = buttonStyles.mainButton.states.success.color;
-            btn.disabled = false;
-            return;
-        }
-
-        // Handle other states
-        if (errorState) {
-            btn.textContent = buttonStyles.mainButton.states.error.text;
-            btn.style.backgroundColor = buttonStyles.mainButton.states.error.background;
-            btn.style.color = buttonStyles.mainButton.states.error.color;
+            if (isProcessing) cancelProcessing();
+            stateKey = 'disabled';
+        } else if (isCompleted) {
+            stateKey = 'success';
+        } else if (errorState) {
+            stateKey = 'error';
+        } else if (isCancelling) {
+            stateKey = 'cancelling';
         } else if (isProcessing) {
-            btn.textContent = buttonStyles.mainButton.states.processing.text;
-            btn.style.backgroundColor = buttonStyles.mainButton.states.processing.background;
-            btn.style.color = buttonStyles.mainButton.states.processing.color;
+            stateKey = 'processing';
         } else {
-            btn.textContent = buttonStyles.mainButton.states.normal.text;
-            btn.style.backgroundColor = buttonStyles.mainButton.states.normal.background;
-            btn.style.color = buttonStyles.mainButton.states.normal.color;
+            stateKey = 'normal';
         }
+
+        const state = buttonStyles.mainButton.states[stateKey];
+        btn.textContent = state.text + (stateKey === 'success' ? ` ${totalBlocked} users` : '');
+        btn.style.backgroundColor = state.background;
+        btn.style.color = state.color;
+
+        if (stateKey === 'disabled') btn.disabled = true;
     }
 
     // ----------------------
@@ -243,9 +233,12 @@
             abortController.abort();
             isProcessing = false;
             abortController = null;
-            btn.textContent = buttonStyles.mainButton.states.cancelling.text;
-            btn.style.backgroundColor = buttonStyles.mainButton.states.cancelling.background;
-            setTimeout(() => updateButtonState(), 2000);
+            isCancelling = true;
+            updateButtonState();
+            setTimeout(() => {
+                isCancelling = false;
+                updateButtonState();
+            }, 2000);
         }
     }
 
@@ -693,16 +686,13 @@
     function addActivationButton() {
         if (document.getElementById('blocker-activator')) return;
 
-        // Create the activation button element
         btn = GM_addElement(document.body, 'button', {
             id: 'blocker-activator',
             style: getStyleString(buttonStyles.mainButton.base)
         });
 
-        // Set initial button state based on the page context
         updateButtonState();
 
-        // Add click event listener to handle activation, cancellation, or retry logic
         btn.addEventListener('click', async () => {
             if (btn.disabled || !isTweetPage()) return;
 
@@ -713,24 +703,20 @@
 
             if (errorState) {
                 errorState = false;
-                btn.style.backgroundColor = buttonStyles.mainButton.states.normal.background;
-                btn.style.color = buttonStyles.mainButton.states.normal.color;
+                updateButtonState();
             }
 
             isProcessing = true;
-            isCompleted = false; // Reset completion state at start
+            isCompleted = false;
+            isCancelling = false;
             abortController = new AbortController();
-
-            btn.textContent = buttonStyles.mainButton.states.processing.text;
-            btn.style.backgroundColor = buttonStyles.mainButton.states.processing.background;
-            btn.disabled = false;
+            updateButtonState();
 
             try {
                 const blockedCount = await main(abortController.signal);
                 totalBlocked += blockedCount;
-                isCompleted = true; // Set completion state on success
-                btn.textContent = `${buttonStyles.mainButton.states.success.text} ${totalBlocked} users`;
-                btn.style.backgroundColor = buttonStyles.mainButton.states.success.background;
+                isCompleted = true;
+                updateButtonState();
 
                 setTimeout(() => {
                     isCompleted = false;
@@ -739,25 +725,19 @@
             } catch (error) {
                 if (error.name === 'AbortError') {
                     console.log('Processing cancelled');
-                    btn.textContent = buttonStyles.mainButton.states.normal.text;
-                    btn.style.backgroundColor = buttonStyles.mainButton.states.normal.background;
                 } else {
                     console.error('Error:', error);
                     errorState = true;
-                    btn.textContent = buttonStyles.mainButton.states.error.text;
-                    btn.style.backgroundColor = buttonStyles.mainButton.states.error.background;
+                    updateButtonState();
                 }
             } finally {
                 isProcessing = false;
                 abortController = null;
-                btn.disabled = false;
-                // Removed the setTimeout that called updateButtonState
+                updateButtonState();
             }
         });
 
-        // Add the settings button for custom conditions
         addSettingsButton();
-        // Start handling URL changes to update button state as needed
         handleUrlChange();
     }
 
