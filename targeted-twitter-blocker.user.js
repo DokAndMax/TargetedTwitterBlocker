@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Targeted Twitter Blocker
 // @namespace    https://github.com/DokAndMax/TargetedTwitterBlocker
-// @version      1.0
+// @version      1.1
 // @description  Block users based on custom conditions with validation
 // @author       DokAndMax
 // @match        https://twitter.com/*
@@ -166,6 +166,7 @@
     let urlCheckInterval = null;
     let isProcessing = false;
     let abortController = null;
+    let isCompleted = false;
 
     // Add additional CSS for the disabled button state
     GM_addStyle(`
@@ -189,17 +190,37 @@
         const isTweet = isTweetPage();
         btn.disabled = !isTweet && !isProcessing;
 
-        // If not on tweet page and processing is ongoing, cancel processing
-        if (!isTweet && isProcessing) {
-            cancelProcessing();
-        }
-
-        // Update button appearance based on state
+        // Reset completion state if not on tweet page
         if (!isTweet) {
+            isCompleted = false;
+            if (isProcessing) {
+                cancelProcessing();
+            }
             btn.textContent = buttonStyles.mainButton.states.disabled.text;
             btn.style.backgroundColor = buttonStyles.mainButton.states.disabled.background;
             btn.style.color = buttonStyles.mainButton.states.disabled.color;
-        } else if (!btn.disabled && !errorState && !isProcessing) {
+            return;
+        }
+
+        // If completed, show success message
+        if (isCompleted) {
+            btn.textContent = `${buttonStyles.mainButton.states.success.text} ${totalBlocked} users`;
+            btn.style.backgroundColor = buttonStyles.mainButton.states.success.background;
+            btn.style.color = buttonStyles.mainButton.states.success.color;
+            btn.disabled = false;
+            return;
+        }
+
+        // Handle other states
+        if (errorState) {
+            btn.textContent = buttonStyles.mainButton.states.error.text;
+            btn.style.backgroundColor = buttonStyles.mainButton.states.error.background;
+            btn.style.color = buttonStyles.mainButton.states.error.color;
+        } else if (isProcessing) {
+            btn.textContent = buttonStyles.mainButton.states.processing.text;
+            btn.style.backgroundColor = buttonStyles.mainButton.states.processing.background;
+            btn.style.color = buttonStyles.mainButton.states.processing.color;
+        } else {
             btn.textContent = buttonStyles.mainButton.states.normal.text;
             btn.style.backgroundColor = buttonStyles.mainButton.states.normal.background;
             btn.style.color = buttonStyles.mainButton.states.normal.color;
@@ -304,12 +325,12 @@
             id: 'blocker-condition-input',
             style: getStyleString(buttonStyles.modal.textarea),
             placeholder: '// Return true to block the user\n' +
-                '// Available parameters: profile, tweet, followingUsers\n\n' +
-                '// Example 1: Block accounts with low followers\n' +
-                '// return profile.followers_count < 100;\n\n' +
-                '// Example 2: Block users following specific accounts\n' +
-                '// const followingNames = followingUsers.map(u => u.screenName.toLowerCase());\n' +
-                '// return followingNames.includes("bot123");'
+            '// Available parameters: profile, tweet, followingUsers\n\n' +
+            '// Example 1: Block accounts with low followers\n' +
+            '// return profile.followers_count < 100;\n\n' +
+            '// Example 2: Block users following specific accounts\n' +
+            '// const followingNames = followingUsers.map(u => u.screenName.toLowerCase());\n' +
+            '// return followingNames.includes("bot123");'
         });
         textarea.value = GM_getValue('userCondition', '');
 
@@ -389,10 +410,10 @@
     function getStyleString(styleObject) {
         return Object.entries(styleObject)
             .map(([prop, value]) => {
-                // Convert camelCase property names to kebab-case
-                const cssProp = prop.replace(/[A-Z]/g, m => `-${m.toLowerCase()}`);
-                return `${cssProp}:${value}`;
-            })
+            // Convert camelCase property names to kebab-case
+            const cssProp = prop.replace(/[A-Z]/g, m => `-${m.toLowerCase()}`);
+            return `${cssProp}:${value}`;
+        })
             .join(';');
     }
 
@@ -563,9 +584,9 @@
                         && entry.content.itemContent.user_results.result
                         && entry.content.itemContent.user_results.result.__typename !== "UserUnavailable")
                 .map(entry => ({
-                    screenName: entry.content.itemContent.user_results.result.legacy?.screen_name,
-                    isBlocked: entry.content.itemContent.user_results.result.legacy.blocking ?? false,
-                })) || [];
+                screenName: entry.content.itemContent.user_results.result.legacy?.screen_name,
+                isBlocked: entry.content.itemContent.user_results.result.legacy.blocking ?? false,
+            })) || [];
         }
 
         // ----------------------
@@ -637,8 +658,8 @@
         // Checks if the given item content represents a tweet entry (not a tombstone or special tweet)
         function isTweetEntry(itemContent) {
             return itemContent.itemType === "TimelineTweet"
-                && itemContent.tweet_results.result.__typename !== "TweetWithVisibilityResults"
-                && itemContent.tweet_results.result.__typename !== "TweetTombstone";
+            && itemContent.tweet_results.result.__typename !== "TweetWithVisibilityResults"
+            && itemContent.tweet_results.result.__typename !== "TweetTombstone";
         }
 
         // ----------------------
@@ -685,13 +706,11 @@
         btn.addEventListener('click', async () => {
             if (btn.disabled || !isTweetPage()) return;
 
-            // If processing is ongoing, cancel it
             if (isProcessing) {
                 cancelProcessing();
                 return;
             }
 
-            // If there's an error state, reset the button to normal
             if (errorState) {
                 errorState = false;
                 btn.style.backgroundColor = buttonStyles.mainButton.states.normal.background;
@@ -699,21 +718,25 @@
             }
 
             isProcessing = true;
+            isCompleted = false; // Reset completion state at start
             abortController = new AbortController();
 
-            // Update button appearance to indicate processing state
             btn.textContent = buttonStyles.mainButton.states.processing.text;
             btn.style.backgroundColor = buttonStyles.mainButton.states.processing.background;
             btn.disabled = false;
 
             try {
-                // Execute the main function and update the total count of blocked users
                 const blockedCount = await main(abortController.signal);
                 totalBlocked += blockedCount;
+                isCompleted = true; // Set completion state on success
                 btn.textContent = `${buttonStyles.mainButton.states.success.text} ${totalBlocked} users`;
                 btn.style.backgroundColor = buttonStyles.mainButton.states.success.background;
+
+                setTimeout(() => {
+                    isCompleted = false;
+                    updateButtonState();
+                }, 6000);
             } catch (error) {
-                // Handle errors and abort events appropriately
                 if (error.name === 'AbortError') {
                     console.log('Processing cancelled');
                     btn.textContent = buttonStyles.mainButton.states.normal.text;
@@ -728,9 +751,7 @@
                 isProcessing = false;
                 abortController = null;
                 btn.disabled = false;
-                if (!errorState) {
-                    setTimeout(updateButtonState, 3000);
-                }
+                // Removed the setTimeout that called updateButtonState
             }
         });
 
