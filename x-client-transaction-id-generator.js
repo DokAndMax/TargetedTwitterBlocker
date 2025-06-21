@@ -24,7 +24,7 @@ async function generateTID() {
 }
 
 
-function () { // This can be made dynamic using message passing
+function fetchApiURL() { // This can be made dynamic using message passing
     return "/i/api/graphql/xd_EMdYvB9hfZsZ6Idri0w/TweetDetail"
 }
 
