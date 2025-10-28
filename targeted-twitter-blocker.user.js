@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Targeted Twitter Blocker
 // @namespace    https://github.com/DokAndMax/TargetedTwitterBlocker
-// @version      1.3
+// @version      1.4
 // @description  Block users based on custom conditions with validation
 // @author       DokAndMax
 // @match        https://twitter.com/*
