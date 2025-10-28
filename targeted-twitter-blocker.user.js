@@ -161,7 +161,8 @@
     };
 
     // Global variables to track state
-    let totalBlocked = 0;
+    let totalBlocked = GM_getValue('totalBlocked', 0);
+    let lastBlockedCount = 0;
     let errorState = false;
     let btn = null;
     let urlCheckInterval = null;
@@ -211,7 +212,11 @@
         }
 
         const state = buttonStyles.mainButton.states[stateKey];
-        btn.textContent = state.text + (stateKey === 'success' ? ` ${totalBlocked} users` : '');
+        if (stateKey === 'success') {
+            btn.textContent = `${state.text}${lastBlockedCount} (total: ${totalBlocked})`;
+        } else {
+            btn.textContent = state.text;
+        }
         btn.style.backgroundColor = state.background;
         btn.style.color = state.color;
 
@@ -488,7 +493,8 @@
         // ----------------------
         // Helper function: Extracts the tweet ID from the current URL
         function getTweetId() {
-            return window.location.href.split('/').pop();
+            const match = window.location.pathname.match(/status\/(\d+)/);
+            return match ? match[1] : null;
         }
 
         // ----------------------
@@ -508,7 +514,7 @@
         // ----------------------
         // Creates request headers required for the API calls
         async function createRequestHeaders(httpMethod, urlPathname) {
-        const xTID = await generateTID();
+            const xTID = await generateTID();
             return {
                 authorization: authToken,
                 'x-csrf-token': csrfToken,
@@ -623,7 +629,7 @@
                         } else {
                             continue;
                         }
-
+                        
                         if (processedUserIds.has(userId)) continue;
 
                         const profile = itemContent.tweet_results.result.core.user_results.result.legacy;
@@ -653,6 +659,8 @@
                 return [entry.content.itemContent];
             if (entry.content.entryType === "TimelineTimelineModule")
                 return entry.content.items.map(item => item.item.itemContent);
+            if (entry.content.entryType === "TimelineTimelineCursor")
+                return [entry.content];
             return [];
         }
 
@@ -667,7 +675,7 @@
         // ----------------------
         // Checks if the given item content is a cursor entry (used for pagination)
         function isCursorEntry(itemContent) {
-            return itemContent.itemType === "TimelineTimelineCursor";
+            return itemContent.itemType === "TimelineTimelineCursor" || (itemContent.entryType === "TimelineTimelineCursor" && itemContent.cursorType == "ShowMoreThreads");
         }
 
         // ----------------------
@@ -724,6 +732,8 @@
             try {
                 const blockedCount = await main(abortController.signal);
                 totalBlocked += blockedCount;
+                GM_setValue('totalBlocked', totalBlocked);
+                lastBlockedCount = blockedCount;
                 isCompleted = true;
                 updateButtonState();
 
