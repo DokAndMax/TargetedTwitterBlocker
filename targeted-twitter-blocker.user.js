@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Targeted Twitter Blocker
 // @namespace    https://github.com/DokAndMax/TargetedTwitterBlocker
-// @version      1.4
+// @version      1.5
 // @description  Block users based on custom conditions with validation
 // @author       DokAndMax
 // @match        https://twitter.com/*
@@ -603,52 +603,84 @@
             await apiRequest(config.apiEndpoints.blockUser, 'POST', `user_id=${userId}`);
         }
 
+        function getTerminatedDirections(instructions) {
+            return instructions
+                .filter(instr => instr.type === "TimelineTerminateTimeline")
+                .map(instr => instr.direction)
+                .filter(Boolean);
+        }
+
+        function filterEntries(instructions, terminatedDirections) {
+            return instructions
+                .flatMap(instr => instr.entries || [])
+                .filter(entry => {
+                const content = entry.content || {};
+                return !(
+                    content.entryType === "TimelineTimelineCursor" &&
+                    terminatedDirections.includes(content.cursorType)
+                );
+            });
+        }
+
+        async function processEntry(entry, cursorQueue, processedUserIds, signal, blockedInfo) {
+            const itemContents = extractItemContents(entry);
+
+            for (const itemContent of itemContents) {
+                if (isCursorEntry(itemContent)) {
+                    cursorQueue.push(itemContent.value);
+                    continue;
+                }
+
+                if (!isTweetEntry(itemContent)) continue;
+
+                const userId = itemContent.tweet_results.result.legacy.user_id_str;
+                if (processedUserIds.has(userId)) continue;
+
+                const profile = itemContent.tweet_results.result.core.user_results.result.legacy;
+                const tweet = itemContent.tweet_results.result.legacy;
+                const followingUsers = await fetchUserFollowing(userId);
+
+                if (shouldBlockUser({ profile, tweet, followingUsers })) {
+                    await blockUser(userId);
+                    logBlockedUser(profile, tweet);
+                    blockedInfo.count += 1;
+                }
+
+                processedUserIds.add(userId);
+
+                if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
+            }
+        }
+
         // ----------------------
         // Processes tweet responses by iterating through tweet threads and applying the block condition
         // Returns the number of users blocked during the process
         async function processTweetResponses(signal) {
-            let cursorQueue = [];
+            const cursorQueue = [];
             const processedUserIds = new Set();
-            let blockedCount = 0;
+            const blockedInfo = { count: 0 };
 
-            do {
-                const data = await fetchTweetResponses(cursorQueue.shift());
+            while (cursorQueue.length > 0 || cursorQueue.length === 0 && !signal.aborted) {
+                const cursor = cursorQueue.shift();
+                const data = await fetchTweetResponses(cursor);
+
                 if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
-                const entries = data.data.threaded_conversation_with_injections_v2.instructions.flatMap(instr => instr.entries || []);
+
+                const instructions = data.data.threaded_conversation_with_injections_v2.instructions || [];
+                const terminatedDirections = getTerminatedDirections(instructions);
+                const entries = filterEntries(instructions, terminatedDirections);
+
+                console.dir(data);
 
                 for (const entry of entries) {
-                    const itemContents = extractItemContents(entry);
-
-                    for (const itemContent of itemContents) {
-                        let userId;
-                        if (isTweetEntry(itemContent)) {
-                            userId = itemContent.tweet_results.result.legacy.user_id_str;
-                        } else if (isCursorEntry(itemContent)) {
-                            cursorQueue.push(itemContent.value);
-                            continue;
-                        } else {
-                            continue;
-                        }
-                        
-                        if (processedUserIds.has(userId)) continue;
-
-                        const profile = itemContent.tweet_results.result.core.user_results.result.legacy;
-                        const tweet = itemContent.tweet_results.result.legacy;
-                        const followingUsers = await fetchUserFollowing(userId);
-
-                        if (shouldBlockUser({ profile, tweet, followingUsers })) {
-                            await blockUser(userId);
-                            logBlockedUser(profile, tweet);
-                            blockedCount += 1;
-                        }
-
-                        processedUserIds.add(userId);
-                    }
+                    await processEntry(entry, cursorQueue, processedUserIds, signal, blockedInfo);
                 }
-            } while (cursorQueue.length > 0 && !signal.aborted);
 
-            if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
-            return blockedCount;
+                if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
+                if (cursorQueue.length === 0) break;
+            }
+
+            return blockedInfo.count;
         }
 
         // ----------------------
@@ -675,7 +707,7 @@
         // ----------------------
         // Checks if the given item content is a cursor entry (used for pagination)
         function isCursorEntry(itemContent) {
-            return itemContent.itemType === "TimelineTimelineCursor" || (itemContent.entryType === "TimelineTimelineCursor" && itemContent.cursorType == "ShowMoreThreads");
+            return itemContent.itemType === "TimelineTimelineCursor" || (itemContent.entryType === "TimelineTimelineCursor" && itemContent.cursorType !== "Top");// && itemContent.cursorType == "ShowMoreThreads");
         }
 
         // ----------------------
@@ -688,92 +720,92 @@
             ].join('\n'));
         }
 
-        // Retrieve key parameters for API calls
-        const tweetId = getTweetId();
-        const authToken = getAuthToken();
-        const csrfToken = getCsrfToken();
+// Retrieve key parameters for API calls
+const tweetId = getTweetId();
+const authToken = getAuthToken();
+const csrfToken = getCsrfToken();
 
-        // Execute the processing of tweet responses and return the count of blocked users
-        return await processTweetResponses(signal);
-    }
+// Execute the processing of tweet responses and return the count of blocked users
+return await processTweetResponses(signal);
+}
 
-    // ----------------------
-    // Initializes and adds the activation button to the page,
-    // sets up its event listeners, and adds the settings button.
-    function addActivationButton() {
-        if (document.getElementById('blocker-activator')) return;
+// ----------------------
+// Initializes and adds the activation button to the page,
+// sets up its event listeners, and adds the settings button.
+function addActivationButton() {
+    if (document.getElementById('blocker-activator')) return;
 
-        btn = GM_addElement(document.body, 'button', {
-            id: 'blocker-activator',
-            style: getStyleString(buttonStyles.mainButton.base)
-        });
+    btn = GM_addElement(document.body, 'button', {
+        id: 'blocker-activator',
+        style: getStyleString(buttonStyles.mainButton.base)
+    });
 
+    updateButtonState();
+
+    btn.addEventListener('click', async () => {
+        if (btn.disabled || !isTweetPage()) return;
+
+        if (isProcessing) {
+            cancelProcessing();
+            return;
+        }
+
+        if (errorState) {
+            errorState = false;
+            updateButtonState();
+        }
+
+        isProcessing = true;
+        isCompleted = false;
+        isCancelling = false;
+        abortController = new AbortController();
         updateButtonState();
 
-        btn.addEventListener('click', async () => {
-            if (btn.disabled || !isTweetPage()) return;
-
-            if (isProcessing) {
-                cancelProcessing();
-                return;
-            }
-
-            if (errorState) {
-                errorState = false;
-                updateButtonState();
-            }
-
-            isProcessing = true;
-            isCompleted = false;
-            isCancelling = false;
-            abortController = new AbortController();
+        try {
+            const blockedCount = await main(abortController.signal);
+            totalBlocked += blockedCount;
+            GM_setValue('totalBlocked', totalBlocked);
+            lastBlockedCount = blockedCount;
+            isCompleted = true;
             updateButtonState();
 
-            try {
-                const blockedCount = await main(abortController.signal);
-                totalBlocked += blockedCount;
-                GM_setValue('totalBlocked', totalBlocked);
-                lastBlockedCount = blockedCount;
-                isCompleted = true;
+            setTimeout(() => {
+                isCompleted = false;
                 updateButtonState();
-
-                setTimeout(() => {
-                    isCompleted = false;
-                    updateButtonState();
-                }, 6000);
-            } catch (error) {
-                if (error.name === 'AbortError') {
-                    console.log('Processing cancelled');
-                } else {
-                    console.error('Error:', error);
-                    errorState = true;
-                    updateButtonState();
-                }
-            } finally {
-                isProcessing = false;
-                abortController = null;
+            }, 6000);
+        } catch (error) {
+            if (error.name === 'AbortError') {
+                console.log('Processing cancelled');
+            } else {
+                console.error('Error:', error);
+                errorState = true;
                 updateButtonState();
             }
-        });
-
-        addSettingsButton();
-        handleUrlChange();
-    }
-
-    // ----------------------
-    // Initializes the script once the page has fully loaded,
-    // and sets up a MutationObserver to monitor DOM changes for adding the activation button.
-    if (document.readyState === 'complete') {
-        addActivationButton();
-    } else {
-        window.addEventListener('load', addActivationButton);
-    }
-
-    const observer = new MutationObserver((mutations) => {
-        if (!document.getElementById('blocker-activator')) {
-            addActivationButton();
+        } finally {
+            isProcessing = false;
+            abortController = null;
+            updateButtonState();
         }
     });
 
-    observer.observe(document.body, { childList: true, subtree: true });
+    addSettingsButton();
+    handleUrlChange();
+}
+
+// ----------------------
+// Initializes the script once the page has fully loaded,
+// and sets up a MutationObserver to monitor DOM changes for adding the activation button.
+if (document.readyState === 'complete') {
+    addActivationButton();
+} else {
+    window.addEventListener('load', addActivationButton);
+}
+
+const observer = new MutationObserver((mutations) => {
+    if (!document.getElementById('blocker-activator')) {
+        addActivationButton();
+    }
+});
+
+observer.observe(document.body, { childList: true, subtree: true });
 })();
