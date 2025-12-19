@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Targeted Twitter Blocker
 // @namespace    https://github.com/DokAndMax/TargetedTwitterBlocker
-// @version      1.5
+// @version      1.6
 // @description  Block users based on custom conditions with validation
 // @author       DokAndMax
 // @match        https://twitter.com/*
@@ -445,8 +445,8 @@
         const config = {
             features: {
                 rweb_video_screen_enabled: false,
-                payments_enabled: false,
                 profile_label_improvements_pcf_label_in_post_enabled: true,
+                responsive_web_profile_redirect_enabled: false,
                 rweb_tipjar_consumption_enabled: true,
                 verified_phone_label_enabled: false,
                 creator_subscriptions_tweet_preview_api_enabled: true,
@@ -457,7 +457,7 @@
                 c9s_tweet_anatomy_moderator_badge_enabled: true,
                 responsive_web_grok_analyze_button_fetch_trends_enabled: false,
                 responsive_web_grok_analyze_post_followups_enabled: true,
-                responsive_web_jetfuel_frame: false,
+                responsive_web_jetfuel_frame: true,
                 responsive_web_grok_share_attachment_enabled: true,
                 articles_preview_enabled: true,
                 responsive_web_edit_tweet_api_enabled: true,
@@ -467,7 +467,7 @@
                 responsive_web_twitter_article_tweet_consumption_enabled: true,
                 tweet_awards_web_tipping_enabled: false,
                 responsive_web_grok_show_grok_translated_post: false,
-                responsive_web_grok_analysis_button_from_backend: false,
+                responsive_web_grok_analysis_button_from_backend: true,
                 creator_subscriptions_quote_tweet_preview_enabled: false,
                 freedom_of_speech_not_reach_fetch_enabled: true,
                 standardized_nudges_misinfo: true,
@@ -475,6 +475,8 @@
                 longform_notetweets_rich_text_read_enabled: true,
                 longform_notetweets_inline_media_enabled: true,
                 responsive_web_grok_image_annotation_enabled: true,
+                responsive_web_grok_imagine_annotation_enabled: true,
+                responsive_web_grok_community_note_auto_translation_is_enabled: false,
                 responsive_web_enhance_cards_enabled: false,
             },
             fieldToggles: {
@@ -484,8 +486,8 @@
                 withDisallowedReplyControls: false,
             },
             apiEndpoints: {
-                tweetDetail: "https://x.com/i/api/graphql/c9RRUtQyVCoDVtyu4CXG0g/TweetDetail",
-                following: "https://x.com/i/api/graphql/0HRVUaBSRLwHSp3nc4HdYg/Following",
+                tweetDetail: "https://x.com/i/api/graphql/97JF30KziU00483E_8elBA/TweetDetail",
+                following: "https://x.com/i/api/graphql/BEkNpEt5pNETESoqMsTEGA/Following",
                 blockUser: "https://x.com/i/api/1.1/blocks/create.json",
             }
         };
@@ -497,11 +499,105 @@
             return match ? match[1] : null;
         }
 
-        // ----------------------
-        // Helper function: Retrieves the auth token from session storage
-        function getAuthToken() {
-            const sessionData = sessionStorage.getItem('bis_data');
-            return sessionData ? JSON.parse(sessionData).config.twitterConfig.LOAD_USER_DATA.AUTH_BEARER : null;
+        // --- helpers to fetch main.js and extract Bearer ---
+
+        function findMainClientWebUrlFromDom() {
+            // Page usually has something like:
+            // https://abs.twimg.com/responsive-web/client-web/main.<hash>.js
+            const scripts = Array.from(document.querySelectorAll('script[src]'));
+            const main = scripts
+            .map(s => s.getAttribute('src'))
+            .find(src => src && src.includes('abs.twimg.com/responsive-web/client-web/main.') && src.endsWith('.js'));
+            return main ? new URL(main, location.href).toString() : null;
+        }
+
+        function extractBearerFromClientWebJs(jsText) {
+            // Looks for: "Bearer AAAAA...." inside the bundle
+            // Example: return "Bearer AAAAA...."
+            // Example: n.set("Authorization", `Bearer ${t}`);
+            // We just need the token and then format "Bearer <token>".
+            const m = jsText.match(/Bearer\s+(AAAAAAAA[^"'\\\s]+)/);
+            if (!m) return null;
+            return `Bearer ${m[1]}`;
+        }
+
+        function gmFetchText(url) {
+            return new Promise((resolve, reject) => {
+                // If GM_xmlhttpRequest exists, use it to avoid CORS issues
+                if (typeof GM_xmlhttpRequest === 'function') {
+                    GM_xmlhttpRequest({
+                        method: 'GET',
+                        url,
+                        headers: { 'Accept': 'text/javascript,*/*;q=0.1' },
+                        onload: (resp) => {
+                            if (resp.status >= 200 && resp.status < 300) resolve(resp.responseText);
+                            else reject(new Error(`GM_xmlhttpRequest failed: ${resp.status} ${resp.statusText}`));
+                        },
+                        onerror: () => reject(new Error('GM_xmlhttpRequest network error')),
+                    });
+                    return;
+                }
+
+                // Fallback to normal fetch
+                fetch(url, { method: 'GET', credentials: 'omit' })
+                    .then(r => {
+                    if (!r.ok) throw new Error(`fetch failed: ${r.status}`);
+                    return r.text();
+                })
+                    .then(resolve)
+                    .catch(reject);
+            });
+        }
+
+        // Async now
+        async function getAuthToken() {
+            // 1) Old way (keep as fast-path if it still exists sometimes)
+            try {
+                const sessionData = sessionStorage.getItem('bis_data');
+                if (sessionData) {
+                    const parsed = JSON.parse(sessionData);
+                    const bearer = parsed?.config?.twitterConfig?.LOAD_USER_DATA?.AUTH_BEARER;
+                    if (typeof bearer === 'string' && bearer.startsWith('Bearer ')) return bearer;
+                }
+            } catch (_) {}
+
+            // 2) Cached Bearer (GM storage)
+            try {
+                const cached = GM_getValue('cachedAuthBearer', null);
+                const cachedAt = GM_getValue('cachedAuthBearerAt', 0);
+                // cache TTL: 7 days
+                if (cached && (Date.now() - cachedAt) < 7 * 24 * 60 * 60 * 1000) {
+                    return cached;
+                }
+            } catch (_) {}
+
+            // 3) Fetch currently-used main.<hash>.js from DOM (best)
+            const domMainUrl = findMainClientWebUrlFromDom();
+
+            // 4) Fallback to the URL you provided (may change hash over time)
+            const fallbackMainUrl = "https://abs.twimg.com/responsive-web/client-web/main.aa3a973a.js";
+
+            const tryUrls = Array.from(new Set([domMainUrl, fallbackMainUrl].filter(Boolean)));
+
+            for (const url of tryUrls) {
+                try {
+                    // cache-bust just in case
+                    const u = new URL(url);
+                    u.searchParams.set('_', String(Date.now()));
+
+                    const jsText = await gmFetchText(u.toString());
+                    const bearer = extractBearerFromClientWebJs(jsText);
+                    if (bearer) {
+                        GM_setValue('cachedAuthBearer', bearer);
+                        GM_setValue('cachedAuthBearerAt', Date.now());
+                        return bearer;
+                    }
+                } catch (e) {
+                    console.warn('Failed to get bearer from', url, e);
+                }
+            }
+
+            return null;
         }
 
         // ----------------------
@@ -555,6 +651,7 @@
                 with_rux_injections: false,
                 rankingMode: "Relevance",
                 includePromotedContent: true,
+                withGrokTranslatedBio: false,
                 withCommunity: true,
                 withQuickPromoteEligibilityTweetFields: true,
                 withBirdwatchNotes: true,
@@ -720,92 +817,95 @@
             ].join('\n'));
         }
 
-// Retrieve key parameters for API calls
-const tweetId = getTweetId();
-const authToken = getAuthToken();
-const csrfToken = getCsrfToken();
-
-// Execute the processing of tweet responses and return the count of blocked users
-return await processTweetResponses(signal);
-}
-
-// ----------------------
-// Initializes and adds the activation button to the page,
-// sets up its event listeners, and adds the settings button.
-function addActivationButton() {
-    if (document.getElementById('blocker-activator')) return;
-
-    btn = GM_addElement(document.body, 'button', {
-        id: 'blocker-activator',
-        style: getStyleString(buttonStyles.mainButton.base)
-    });
-
-    updateButtonState();
-
-    btn.addEventListener('click', async () => {
-        if (btn.disabled || !isTweetPage()) return;
-
-        if (isProcessing) {
-            cancelProcessing();
-            return;
+        // Retrieve key parameters for API calls
+        const tweetId = getTweetId();
+        const authToken = await getAuthToken();
+        if (!authToken) {
+            throw new Error('Could not obtain Authorization Bearer token');
         }
+        const csrfToken = getCsrfToken();
 
-        if (errorState) {
-            errorState = false;
-            updateButtonState();
-        }
+        // Execute the processing of tweet responses and return the count of blocked users
+        return await processTweetResponses(signal);
+    }
 
-        isProcessing = true;
-        isCompleted = false;
-        isCancelling = false;
-        abortController = new AbortController();
+    // ----------------------
+    // Initializes and adds the activation button to the page,
+    // sets up its event listeners, and adds the settings button.
+    function addActivationButton() {
+        if (document.getElementById('blocker-activator')) return;
+
+        btn = GM_addElement(document.body, 'button', {
+            id: 'blocker-activator',
+            style: getStyleString(buttonStyles.mainButton.base)
+        });
+
         updateButtonState();
 
-        try {
-            const blockedCount = await main(abortController.signal);
-            totalBlocked += blockedCount;
-            GM_setValue('totalBlocked', totalBlocked);
-            lastBlockedCount = blockedCount;
-            isCompleted = true;
-            updateButtonState();
+        btn.addEventListener('click', async () => {
+            if (btn.disabled || !isTweetPage()) return;
 
-            setTimeout(() => {
-                isCompleted = false;
-                updateButtonState();
-            }, 6000);
-        } catch (error) {
-            if (error.name === 'AbortError') {
-                console.log('Processing cancelled');
-            } else {
-                console.error('Error:', error);
-                errorState = true;
+            if (isProcessing) {
+                cancelProcessing();
+                return;
+            }
+
+            if (errorState) {
+                errorState = false;
                 updateButtonState();
             }
-        } finally {
-            isProcessing = false;
-            abortController = null;
+
+            isProcessing = true;
+            isCompleted = false;
+            isCancelling = false;
+            abortController = new AbortController();
             updateButtonState();
+
+            try {
+                const blockedCount = await main(abortController.signal);
+                totalBlocked += blockedCount;
+                GM_setValue('totalBlocked', totalBlocked);
+                lastBlockedCount = blockedCount;
+                isCompleted = true;
+                updateButtonState();
+
+                setTimeout(() => {
+                    isCompleted = false;
+                    updateButtonState();
+                }, 6000);
+            } catch (error) {
+                if (error.name === 'AbortError') {
+                    console.log('Processing cancelled');
+                } else {
+                    console.error('Error:', error);
+                    errorState = true;
+                    updateButtonState();
+                }
+            } finally {
+                isProcessing = false;
+                abortController = null;
+                updateButtonState();
+            }
+        });
+
+        addSettingsButton();
+        handleUrlChange();
+    }
+
+    // ----------------------
+    // Initializes the script once the page has fully loaded,
+    // and sets up a MutationObserver to monitor DOM changes for adding the activation button.
+    if (document.readyState === 'complete') {
+        addActivationButton();
+    } else {
+        window.addEventListener('load', addActivationButton);
+    }
+
+    const observer = new MutationObserver((mutations) => {
+        if (!document.getElementById('blocker-activator')) {
+            addActivationButton();
         }
     });
 
-    addSettingsButton();
-    handleUrlChange();
-}
-
-// ----------------------
-// Initializes the script once the page has fully loaded,
-// and sets up a MutationObserver to monitor DOM changes for adding the activation button.
-if (document.readyState === 'complete') {
-    addActivationButton();
-} else {
-    window.addEventListener('load', addActivationButton);
-}
-
-const observer = new MutationObserver((mutations) => {
-    if (!document.getElementById('blocker-activator')) {
-        addActivationButton();
-    }
-});
-
-observer.observe(document.body, { childList: true, subtree: true });
+    observer.observe(document.body, { childList: true, subtree: true });
 })();
