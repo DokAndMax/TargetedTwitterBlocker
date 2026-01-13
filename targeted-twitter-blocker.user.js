@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Targeted Twitter Blocker
 // @namespace    https://github.com/DokAndMax/TargetedTwitterBlocker
-// @version      1.6
+// @version      1.7
 // @description  Block users based on custom conditions with validation
 // @author       DokAndMax
 // @match        https://twitter.com/*
@@ -666,18 +666,65 @@
 
         // ----------------------
         // Fetches the list of users that a given user is following
+        // ----------------------
         async function fetchUserFollowing(userId) {
-            const variables = {
-                userId,
-                count: 20,
-                includePromotedContent: false,
-            };
+            let allUsers = [];
+            let cursor = null;
+            let hasNextPage = true;
 
-            const url = `${config.apiEndpoints.following}?variables=${encodeURIComponent(JSON.stringify(variables))}&features=${encodeURIComponent(JSON.stringify(config.features))}`;
+            // Number of pages (1 page ≈ 50 users)
+            const MAX_PAGES = 10;
+            let pageCount = 0;
 
-            const data = await apiRequest(url);
+            while (hasNextPage && pageCount < MAX_PAGES) {
+                const variables = {
+                    userId,
+                    includePromotedContent: false,
+                };
 
-            return extractFollowingScreenNames(data);
+                // Add cursor if it's not the first page
+                if (cursor) {
+                    variables.cursor = cursor;
+                }
+
+                const url = `${config.apiEndpoints.following}?variables=${encodeURIComponent(JSON.stringify(variables))}&features=${encodeURIComponent(JSON.stringify(config.features))}`;
+
+                try {
+                    const data = await apiRequest(url);
+
+                    if (!data) {
+                        console.error("[Blocker] Error: No data from API");
+                        break;
+                    }
+
+                    // 1. Extract users
+                    const newUsers = extractFollowingScreenNames(data);
+                    if (newUsers.length === 0) {
+                        hasNextPage = false;
+                        break;
+                    }
+
+                    allUsers = [...allUsers, ...newUsers];
+
+                    // 2. Find the cursor for the next page
+                    const nextCursor = extractBottomCursor(data);
+
+                    if (nextCursor && nextCursor !== cursor) {
+                        cursor = nextCursor;
+                        pageCount++;
+                        // Pause 500ms to avoid a ban
+                        await new Promise(resolve => setTimeout(resolve, 500));
+                    } else {
+                        hasNextPage = false;
+                    }
+
+                } catch (e) {
+                    console.error("[Blocker] Critical error in the loop:", e);
+                    break;
+                }
+            }
+
+            return allUsers;
         }
 
         // ----------------------
@@ -692,6 +739,24 @@
                 screenName: entry.content.itemContent.user_results.result.core?.screen_name,
                 isBlocked: entry.content.itemContent.user_results.result.relationship_perspectives.blocking ?? false,
             })) || [];
+        }
+
+        // ----------------------
+        // Витягує курсор "Bottom" для пагінації з відповіді API
+        function extractBottomCursor(data) {
+            const instructions = data?.data?.user?.result?.timeline?.timeline?.instructions || [];
+
+            // Шукаємо інструкцію TimelineAddEntries
+            const addEntries = instructions.find(i => i.type === "TimelineAddEntries");
+            if (!addEntries || !addEntries.entries) return null;
+
+            // Шукаємо запис курсора типу Bottom
+            const cursorEntry = addEntries.entries.find(entry =>
+                                                        entry.content?.entryType === "TimelineTimelineCursor" &&
+                                                        entry.content?.cursorType === "Bottom"
+                                                       );
+
+            return cursorEntry ? cursorEntry.content.value : null;
         }
 
         // ----------------------
@@ -733,7 +798,7 @@
                 const userId = itemContent.tweet_results.result.legacy.user_id_str;
                 if (processedUserIds.has(userId)) continue;
 
-                const profile = itemContent.tweet_results.result.core.user_results.result.legacy;
+                const profile = itemContent.tweet_results.result.core.user_results.result;
                 const tweet = itemContent.tweet_results.result.legacy;
                 const followingUsers = await fetchUserFollowing(userId);
 
@@ -766,8 +831,6 @@
                 const instructions = data.data.threaded_conversation_with_injections_v2.instructions || [];
                 const terminatedDirections = getTerminatedDirections(instructions);
                 const entries = filterEntries(instructions, terminatedDirections);
-
-                console.dir(data);
 
                 for (const entry of entries) {
                     await processEntry(entry, cursorQueue, processedUserIds, signal, blockedInfo);
@@ -811,8 +874,8 @@
         // Logs information about the blocked user to the console for debugging purposes
         function logBlockedUser(profile, tweet) {
             console.log([
-                `Blocked user ${profile.name} (@${profile.screen_name})`,
-                `Link: https://x.com/${profile.screen_name}/status/${tweet.id_str}`,
+                `Blocked user ${profile.core.name} (@${profile.core.screen_name})`,
+                `Link: https://x.com/${profile.core.screen_name}/status/${tweet.id_str}`,
                 `Tweet: ${tweet.full_text}`
             ].join('\n'));
         }
