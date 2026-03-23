@@ -49,12 +49,22 @@ const getFramesInterval = setInterval(() => {
 async function getIndices() {
     let url = null;
     const keyByteIndices = [];
-    const targetFileMatch = document.documentElement.innerHTML.match(/"ondemand\.s":"([0-9a-f]+)"/);
+    const html = document.documentElement.innerHTML;
 
-    if (targetFileMatch) {
-        const hexString = targetFileMatch[1];
-        url = `https://abs.twimg.com/responsive-web/client-web/ondemand.s.${hexString}a.js`;
-    } else {
+    const chunkIdMatch = html.match(/(\d+)\s*:\s*"ondemand\.s"/);
+    if (chunkIdMatch) {
+        const chunkId = chunkIdMatch[1];
+        const hashRegex = new RegExp(chunkId + '\\s*:\\s*"([0-9a-f]+)"', 'g');
+        let hashMatch;
+        while ((hashMatch = hashRegex.exec(html)) !== null) {
+            if (hashMatch[1] !== "ondemand.s" && /^[0-9a-f]+$/.test(hashMatch[1])) {
+                url = `https://abs.twimg.com/responsive-web/client-web/ondemand.s.${hashMatch[1]}a.js`;
+                break;
+            }
+        }
+    }
+
+    if (!url) {
         throw new Error("Transaction ID generator needs an update.");
     }
 
