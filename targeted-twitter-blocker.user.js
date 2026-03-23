@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Targeted Twitter Blocker
 // @namespace    https://github.com/DokAndMax/TargetedTwitterBlocker
-// @version      1.7
+// @version      1.7.1
 // @description  Block users based on custom conditions with validation
 // @author       DokAndMax
 // @match        https://twitter.com/*
@@ -170,6 +170,7 @@
     let isCancelling = false;
     let abortController = null;
     let isCompleted = false;
+    let completedOnUrl = null;
 
     // Add additional CSS for the disabled button state
     GM_addStyle(`
@@ -191,12 +192,19 @@
         if (!btn) return;
 
         const isTweet = isTweetPage();
+        const currentUrl = window.location.href;
         btn.disabled = !isTweet && !isProcessing;
+
+        if (isCompleted && currentUrl !== completedOnUrl) {
+            isCompleted = false;
+            completedOnUrl = null;
+        }
 
         let stateKey;
 
         if (!isTweet) {
             isCompleted = false;
+            completedOnUrl = null;
             if (isProcessing) cancelProcessing();
             stateKey = 'disabled';
         } else if (isCompleted) {
@@ -224,7 +232,7 @@
     }
 
     // ----------------------
-    // Monitors URL changes and updates the button state accordingly at regular intervals
+    // Monitors URL changes and updates the button state accordingly at regular interval
     function handleUrlChange() {
         clearInterval(urlCheckInterval);
         urlCheckInterval = setInterval(() => {
@@ -666,7 +674,6 @@
 
         // ----------------------
         // Fetches the list of users that a given user is following
-        // ----------------------
         async function fetchUserFollowing(userId) {
             let allUsers = [];
             let cursor = null;
@@ -920,6 +927,7 @@
 
             isProcessing = true;
             isCompleted = false;
+            completedOnUrl = null;
             isCancelling = false;
             abortController = new AbortController();
             updateButtonState();
@@ -930,12 +938,9 @@
                 GM_setValue('totalBlocked', totalBlocked);
                 lastBlockedCount = blockedCount;
                 isCompleted = true;
+                completedOnUrl = window.location.href;
                 updateButtonState();
 
-                setTimeout(() => {
-                    isCompleted = false;
-                    updateButtonState();
-                }, 6000);
             } catch (error) {
                 if (error.name === 'AbortError') {
                     console.log('Processing cancelled');
